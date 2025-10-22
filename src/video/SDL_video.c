@@ -96,6 +96,9 @@ static int hide_battery = 0;
 static int has_low_battery = 0;
 static unsigned long battery_ticks = 0;
 
+static int g_width = 640;
+static int g_height = 480;
+
 // basd on GFX_rev10
 
 #define	pixelsPa	unused1
@@ -197,8 +200,8 @@ static void* GFX_FlipThread(void* param) {
 	while(1) {
 		while (!now_flipping) pthread_cond_wait(&flip_req, &flip_mx);
 		Fence = flipFence;
-		do {	target_offset = vinfo.yoffset + 480;
-			if ( target_offset == 1440 ) target_offset = 0;
+		do {	target_offset = vinfo.yoffset + g_height;
+			if ( target_offset == (g_height*3) ) target_offset = 0;
 			vinfo.yoffset = target_offset;
 			pthread_cond_signal(&flip_start);
 			pthread_mutex_unlock(&flip_mx);
@@ -225,11 +228,12 @@ static void* GFX_FlipThread(void* param) {
 				// always wait when low bat so we can blit the icon after flip
 				MI_GFX_WaitAllDone(FALSE, flipFence); Fence = 0;
 				
-				uint32_t *dst_buffer = fb_addr + (vinfo.yoffset * 640 * sizeof(uint32_t));
+				int o_height = g_height - 48;
+				uint32_t *dst_buffer = fb_addr + (vinfo.yoffset * g_width * sizeof(uint32_t));
 				if (has_low_battery) {
 					// draw low battery icon
 					uint32_t *src_buffer = battery_pixels;
-					dst_buffer += (640 * 432) + 8;
+					dst_buffer += (g_width * o_height) + 8;
 					for (int y=0; y<40; y++) {
 						uint32_t *dst_buffer_row = dst_buffer;
 						for (int x=0; x<28; x++) {
@@ -237,19 +241,19 @@ static void* GFX_FlipThread(void* param) {
 							dst_buffer_row += 1;
 							src_buffer += 1;
 						}
-						dst_buffer += 640;
+						dst_buffer += g_width;
 					}
 				}
 				else {
 					// clear low battery icon
-					dst_buffer += (640 * 432) + 8;
+					dst_buffer += (g_width * o_height) + 8;
 					for (int y=0; y<40; y++) {
 						uint32_t *dst_buffer_row = dst_buffer;
 						for (int x=0; x<28; x++) {
 							*dst_buffer_row = 0;
 							dst_buffer_row += 1;
 						}
-						dst_buffer += 640;
+						dst_buffer += g_width;
 					}
 				}
 			} else if (Fence) { MI_GFX_WaitAllDone(FALSE, Fence); Fence = 0; }
@@ -332,9 +336,9 @@ static void	GFX_Flip(SDL_Surface *surface) {
 		if (flipFlags & GFX_BLOCKING) {
 			while (now_flipping == 2) pthread_cond_wait(&flip_start, &flip_mx);
 		}
-		target_offset = vinfo.yoffset + 480;
-		if ( target_offset == 1440 ) target_offset = 0;
-		stDst.phyAddr = finfo.smem_start + (640*target_offset*4);
+		target_offset = vinfo.yoffset + g_height;
+		if ( target_offset == (g_height*3) ) target_offset = 0;
+		stDst.phyAddr = finfo.smem_start + (g_width*target_offset*4);
 		MI_GFX_BitBlit(&stSrc, &stSrcRect, &stDst, &stDstRect, &stOpt, &flipFence);
 
 		// Request Flip
@@ -359,6 +363,7 @@ void GFX_ClearFrameBuffer(void) { MI_SYS_MemsetPa(finfo.smem_start, 0, finfo.sme
 //		Prepare for HW Blit to FB
 //
 static void	GFX_Init(void) {
+	puts("custom SDL (Miyoo Mini)"); fflush(stdout);
 	if (fd_fb == 0) {
 		MI_SYS_Init();
 		MI_GFX_Open();
@@ -368,11 +373,18 @@ static void	GFX_Init(void) {
 		memset(mma_db, 0, sizeof(mma_db));
 #endif
 		fd_fb = open("/dev/fb0", O_RDWR);
-
-		_SDL_SetVideoMode(640, 480, 32, SDL_SWSURFACE);
+		
+		_SDL_SetVideoMode(g_width, g_height, 32, SDL_SWSURFACE);
 		ioctl(fd_fb, FBIOGET_VSCREENINFO, &vinfo);
-		vinfo.yres_virtual = 1440; vinfo.yoffset = 0;
+		printf("vinfo (before): %ix%i\n", vinfo.xres,vinfo.yres); fflush(stdout);
+		
+		vinfo.xres = vinfo.xres_virtual = g_width;
+		vinfo.yres = g_height;
+		vinfo.yres_virtual = (g_height*3); vinfo.yoffset = 0;
 		ioctl(fd_fb, FBIOPUT_VSCREENINFO, &vinfo);
+
+		ioctl(fd_fb, FBIOGET_VSCREENINFO, &vinfo);
+		printf("vinfo (after): %ix%i\n", vinfo.xres,vinfo.yres); fflush(stdout);
 
 		ioctl(fd_fb, FBIOGET_FSCREENINFO, &finfo);
 		
@@ -383,13 +395,13 @@ static void	GFX_Init(void) {
 
 		stDst.phyAddr = finfo.smem_start;
 		stDst.eColorFmt = E_MI_GFX_FMT_ARGB8888;
-		stDst.u32Width = 640;
-		stDst.u32Height = 480;
-		stDst.u32Stride = 640*4;
+		stDst.u32Width = g_width;
+		stDst.u32Height = g_height;
+		stDst.u32Stride = g_width*4;
 		stDstRect.s32Xpos = 0;
 		stDstRect.s32Ypos = 0;
-		stDstRect.u32Width = 640;
-		stDstRect.u32Height = 480;
+		stDstRect.u32Width = g_width;
+		stDstRect.u32Height = g_height;
 		stSrcRect.s32Xpos = 0;
 		stSrcRect.s32Ypos = 0;
 
@@ -420,7 +432,7 @@ static void	GFX_Quit(void) {
 		if (getenv("SDL_FBCON_DONT_CLEAR")) {
             // copy current frame to initial frame
             ioctl(fd_fb, FBIOGET_VSCREENINFO, &vinfo);
-            if (vinfo.yoffset) MI_SYS_MemcpyPa(finfo.smem_start, finfo.smem_start + (640*vinfo.yoffset*4), 640*480*4);
+            if (vinfo.yoffset) MI_SYS_MemcpyPa(finfo.smem_start, finfo.smem_start + (g_width*vinfo.yoffset*4), g_width*g_height*4);
         } else {
             // clear entire FB
             GFX_ClearFrameBuffer();
@@ -460,8 +472,8 @@ static SDL_Surface*	GFX_CreateRGBSurface(uint32_t flags, int width, int height, 
 	SDL_Surface*	surface;
 	MI_PHY		phyAddr;
 	void*		virAddr;
-	if (!width) width = 640;
-	if (!height) height = 480;
+	if (!width) width = g_width;
+	if (!height) height = g_height;
 	if (!depth) depth = 32;
 	int		pitch = width * (uint32_t)(depth/8);
 	uint32_t	size = pitch * height;
@@ -1444,6 +1456,9 @@ SDL_Surface * SDL_SetVideoMode (int width, int height, int bpp, Uint32 flags) { 
 
 	if (current_video && SDL_PublicSurface && SDL_PublicSurface->pixelsPa) ready_to_go = SDL_PublicSurface;
 
+	if (width>0) g_width = width;
+	if (height>0) g_height = height;
+
 	GFX_Init();
 
 	GFX_UpdateFlags();
@@ -1451,8 +1466,8 @@ SDL_Surface * SDL_SetVideoMode (int width, int height, int bpp, Uint32 flags) { 
 	if (ready_to_go) GFX_FreeSurface(ready_to_go);
 	
 	// NOTE: this is probably a probe for native resolution
-	if (width==0) width = 640;
-	if (height==0) height = 480;
+	if (width==0) width = g_width;
+	if (height==0) height = g_height;
 	if (bpp==0) bpp = 32;
 	
 #if defined DEBUG_VIDEO
